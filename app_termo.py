@@ -18,7 +18,7 @@ st.set_page_config(page_title="TermoTables - Propiedades Termodinámicas", layou
 
 st.title("📘 TermoTables - Propiedades Termodinámicas (CoolProp + Interpolación)")
 st.write("""
-Esta herramienta permite obtener propiedades termodinámicas de agua, refrigerantes y gases.
+Esta herramienta permite obtener propiedades termodinámicas de **agua, refrigerantes y gases comunes**.
 Puedes usar **CoolProp** para obtener propiedades directamente o **subir una tabla CSV** para interpolar valores.
 
 ### 🧮 Guía rápida de propiedades:
@@ -42,7 +42,16 @@ mode = st.radio("Selecciona modo de operación", ["CoolProp (propiedades)", "Tab
 if mode == "CoolProp (propiedades)":
     st.subheader("📗 Obtener propiedades con CoolProp")
 
-    fluid = st.text_input("Nombre del fluido (ejemplo: Water, R134a, Air)", "Water")
+    # Fluido con lista desplegable
+    common_fluids = [
+        "Water", "Air", "Ammonia", "R22", "R134a", "R410A", "R32", "CO2", "Methane",
+        "Propane", "Butane", "Ethanol", "Oxygen", "Nitrogen"
+    ]
+    fluid = st.selectbox("Selecciona fluido", common_fluids, index=0)
+
+    custom_fluid = st.text_input("Otro fluido (opcional, escribir solo si no está en la lista)", "")
+    if custom_fluid.strip():
+        fluid = custom_fluid.strip()
 
     outputs = st.multiselect(
         "Propiedades a obtener (CoolProp keys)",
@@ -116,7 +125,7 @@ if mode == "CoolProp (propiedades)":
                 "Valor": results.values(),
                 "Unidad": [units_map[o] for o in results.keys()]
             })
-            st.success("✅ Cálculo exitoso")
+            st.success(f"✅ Cálculo exitoso para **{fluid}**")
             st.dataframe(df, hide_index=True, use_container_width=True)
         except Exception as e:
             st.error(f"❌ Error al obtener propiedades: {e}\nRevisa nombre del fluido y valores válidos.")
