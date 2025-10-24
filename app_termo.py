@@ -1,182 +1,187 @@
 # ============================================================
-# app_termo.py
-# Streamlit app para obtener propiedades termodinámicas
-# con CoolProp o por interpolación de tablas
+# app_termo.py  —  TermoTables (CoolProp)
+# Estado general (2 entradas) + Saturación (1 entrada + Q)
+# Unidades amigables: °C, kPa, kJ/kg, etc. (conversión interna)
 # ============================================================
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 from CoolProp.CoolProp import PropsSI
-from scipy.interpolate import RegularGridInterpolator, griddata
-import matplotlib.pyplot as plt
 
-# ============================================================
-# CONFIGURACIÓN BÁSICA
-# ============================================================
-st.set_page_config(page_title="TermoTables - Propiedades Termodinámicas", layout="wide")
+st.set_page_config(page_title="TermoTables - CoolProp", layout="wide")
 
-st.title("📘 TermoTables - Propiedades Termodinámicas (CoolProp + Interpolación)")
+st.title("📘 TermoTables — Propiedades Termodinámicas (CoolProp)")
 st.write("""
-Esta herramienta permite obtener propiedades termodinámicas de **agua, refrigerantes y gases comunes**.
-Puedes usar **CoolProp** para obtener propiedades directamente o **subir una tabla CSV** para interpolar valores.
-
-### 🧮 Guía rápida de propiedades:
-| Símbolo | Nombre | Unidad (SI) | Descripción breve |
-|----------|---------|-------------|-------------------|
-| **T** | Temperatura | K | Grado de agitación térmica |
-| **P** | Presión | Pa | Fuerza ejercida por unidad de área |
-| **D** | Densidad | kg/m³ | Masa por unidad de volumen |
-| **H** | Entalpía | J/kg | Energía total (interna + PV) |
-| **S** | Entropía | J/kg·K | Energía no disponible para trabajo |
-| **V** | Volumen específico | m³/kg | Volumen ocupado por 1 kg |
-| **CP** | Calor específico a P constante | J/kg·K | Energía para subir 1 K a P constante |
-| **CV** | Calor específico a V constante | J/kg·K | Energía para subir 1 K a V constante |
+Obtén propiedades de **agua, refrigerantes y gases** usando **CoolProp**.
+- **Estado general:** ingresa 2 propiedades independientes (p. ej., T y P).
+- **Saturación:** ingresa P **o** T y una **calidad (Q)**: 0 = líquido saturado, 1 = vapor saturado.
 """)
 
-mode = st.radio("Selecciona modo de operación", ["CoolProp (propiedades)", "Tabla CSV (interpolación 2D)"])
+with st.expander("🧮 Guía rápida de propiedades (símbolo, unidad, descripción)"):
+    st.markdown("""
+| Símbolo | Unidad (SI) | Descripción breve |
+|---|---|---|
+| **T** | K | Temperatura |
+| **P** | Pa | Presión |
+| **D** | kg/m³ | Densidad |
+| **H** | J/kg | Entalpía específica |
+| **S** | J/kg·K | Entropía específica |
+| **V** | m³/kg | Volumen específico |
+| **CP** | J/kg·K | Calor específico a P constante |
+| **CV** | J/kg·K | Calor específico a V constante |
+""")
 
-# ============================================================
-# MODO COOLPROP
-# ============================================================
-if mode == "CoolProp (propiedades)":
-    st.subheader("📗 Obtener propiedades con CoolProp")
+# --------------------------
+# Utilidades
+# --------------------------
+UNITS_OUT = {
+    "T": "K", "P": "Pa", "D": "kg/m³", "H": "J/kg", "S": "J/kg·K",
+    "V": "m³/kg", "CP": "J/kg·K", "CV": "J/kg·K"
+}
+DESC = {
+    "T": "Temperatura",
+    "P": "Presión",
+    "D": "Densidad",
+    "H": "Entalpía específica",
+    "S": "Entropía específica",
+    "V": "Volumen específico",
+    "CP": "Calor específico a P constante",
+    "CV": "Calor específico a V constante",
+}
+OUT_KEYS = {  # mapeo símbolo -> clave CoolProp
+    "T": "T", "P": "P", "D": "Dmass", "H": "Hmass", "S": "Smass",
+    "V": "Vmass", "CP": "Cpmass", "CV": "Cvmass"
+}
+IN_KEYS = {   # mapeo símbolo -> clave CoolProp input
+    "T": "T", "P": "P", "H": "Hmass", "D": "Dmass"
+}
 
-    # Fluido con lista desplegable
-    common_fluids = [
-        "Water", "Air", "Ammonia", "R22", "R134a", "R410A", "R32", "CO2", "Methane",
-        "Propane", "Butane", "Ethanol", "Oxygen", "Nitrogen"
-    ]
-    fluid = st.selectbox("Selecciona fluido", common_fluids, index=0)
+def to_SI(symbol: str, value: float, unit: str) -> float:
+    """Convierte valor ingresado en unidad amigable a SI para CoolProp."""
+    if symbol == "T":
+        return value + 273.15 if unit == "°C" else value
+    if symbol == "P":
+        return value * 1_000 if unit == "kPa" else value
+    if symbol == "H":
+        return value * 1_000 if unit == "kJ/kg" else value
+    # D en kg/m³ ya es SI
+    return value
 
-    custom_fluid = st.text_input("Otro fluido (opcional, escribir solo si no está en la lista)", "")
-    if custom_fluid.strip():
-        fluid = custom_fluid.strip()
+# --------------------------
+# UI Fluido
+# --------------------------
+st.subheader("1) Fluido")
+common_fluids = [
+    "Water", "Air", "R134a", "R22", "R410A", "R32", "CO2", "Ammonia",
+    "Methane", "Propane", "Butane", "Ethanol", "Oxygen", "Nitrogen"
+]
+fluid = st.selectbox("Selecciona fluido", common_fluids, index=0)
+custom = st.text_input("Otro fluido (opcional)", "")
+if custom.strip():
+    fluid = custom.strip()
 
-    outputs = st.multiselect(
-        "Propiedades a obtener (CoolProp keys)",
-        ["T", "P", "D", "H", "S", "V", "CP", "CV"],
-        default=["T", "P", "D", "H"]
-    )
+# --------------------------
+# Modo de cálculo
+# --------------------------
+st.subheader("2) Modo de cálculo")
+mode = st.radio("Elige un modo", ["Estado general (2 entradas)", "Saturación (1 entrada + Q)"])
 
-    input1 = st.selectbox("Variable 1 (entrada)", ["T (K)", "P (Pa)", "H (J/kg)", "D (kg/m³)"])
-    input2 = st.selectbox("Variable 2 (entrada)", ["P (Pa)", "T (K)", "H (J/kg)", "D (kg/m³)"])
+# --------------------------
+# Entradas
+# --------------------------
+st.subheader("3) Entradas")
 
-    # Conversión de unidades amigables
-    if "T" in input1:
-        val1 = st.number_input("Temperatura (°C)", value=25.0)
-    else:
-        val1 = st.number_input("Valor 1", value=300.0)
+def input_with_units(label_symbol: str):
+    """Devuelve valor en SI a partir de inputs con selector de unidades."""
+    if label_symbol == "T":
+        unit = st.selectbox(f"Unidad de T", ["°C", "K"], key=f"uT_{st.session_state.get('uid',0)}")
+        val = st.number_input(f"T ({unit})", value=25.0 if unit=="°C" else 298.15, key=f"vT_{st.session_state.get('uid',0)}")
+        return to_SI("T", val, unit)
+    if label_symbol == "P":
+        unit = st.selectbox(f"Unidad de P", ["kPa", "Pa"], key=f"uP_{st.session_state.get('uid',0)}")
+        val = st.number_input(f"P ({unit})", value=101.325 if unit=="kPa" else 101325.0, key=f"vP_{st.session_state.get('uid',0)}")
+        return to_SI("P", val, unit)
+    if label_symbol == "H":
+        unit = st.selectbox(f"Unidad de H", ["kJ/kg", "J/kg"], key=f"uH_{st.session_state.get('uid',0)}")
+        val = st.number_input(f"H ({unit})", value=200.0 if unit=="kJ/kg" else 200000.0, key=f"vH_{st.session_state.get('uid',0)}")
+        return to_SI("H", val, unit)
+    if label_symbol == "D":
+        unit = "kg/m³"
+        val = st.number_input(f"D ({unit})", value=1.0, key=f"vD_{st.session_state.get('uid',0)}")
+        return val
+    raise ValueError("Símbolo no soportado")
 
-    if "P" in input2:
-        val2 = st.number_input("Presión (kPa)", value=101.325)
-    else:
-        val2 = st.number_input("Valor 2", value=101325.0)
+outputs = st.multiselect(
+    "Propiedades a obtener",
+    ["T","P","D","H","S","V","CP","CV"],
+    default=["T","P","D","H"]
+)
 
-    # Funciones de conversión
-    T_in_K = lambda C: C + 273.15
-    P_in_Pa = lambda kPa: kPa * 1000
+if mode == "Estado general (2 entradas)":
+    col1, col2 = st.columns(2)
+    with col1:
+        var1 = st.selectbox("Variable 1", ["T","P","H","D"], index=0)
+        st.session_state["uid"] = 1
+        val1_SI = input_with_units(var1)
+    with col2:
+        var2 = st.selectbox("Variable 2", ["P","T","H","D"], index=0)
+        st.session_state["uid"] = 2
+        val2_SI = input_with_units(var2)
 
-    # Aplicar conversión antes del cálculo
-    if "T" in input1:
-        val1 = T_in_K(val1)
-    if "P" in input1:
-        val1 = P_in_Pa(val1)
-    if "T" in input2:
-        val2 = T_in_K(val2)
-    if "P" in input2:
-        val2 = P_in_Pa(val2)
-
-    if st.button("Calcular propiedades"):
-        input_map = {"T (K)": "T", "P (Pa)": "P", "H (J/kg)": "Hmass", "D (kg/m³)": "Dmass"}
-        map_keys = {
-            "T": "T", "P": "P", "D": "Dmass", "H": "Hmass", "S": "Smass",
-            "V": "Vmass", "CP": "Cpmass", "CV": "Cvmass"
-        }
-
-        units_map = {
-            "T": "K", "P": "Pa", "D": "kg/m³", "H": "J/kg", "S": "J/kg·K",
-            "V": "m³/kg", "CP": "J/kg·K", "CV": "J/kg·K"
-        }
-
-        desc_map = {
-            "T": "Temperatura",
-            "P": "Presión",
-            "D": "Densidad",
-            "H": "Entalpía específica",
-            "S": "Entropía específica",
-            "V": "Volumen específico",
-            "CP": "Calor específico a P constante",
-            "CV": "Calor específico a V constante"
-        }
-
+    if st.button("Calcular (Estado general)"):
         try:
-            key1 = input_map[input1]
-            key2 = input_map[input2]
-            results = {}
+            res = {}
+            k1 = IN_KEYS[var1]; k2 = IN_KEYS[var2]
             for out in outputs:
-                out_key = map_keys.get(out, out)
-                val = PropsSI(out_key, key1, float(val1), key2, float(val2), fluid)
-                results[out] = val
-
+                res[out] = PropsSI(OUT_KEYS[out], k1, float(val1_SI), k2, float(val2_SI), fluid)
             df = pd.DataFrame({
-                "Propiedad": [desc_map[o] for o in results.keys()],
-                "Símbolo": results.keys(),
-                "Valor": results.values(),
-                "Unidad": [units_map[o] for o in results.keys()]
+                "Propiedad": [DESC[o] for o in res.keys()],
+                "Símbolo": list(res.keys()),
+                "Valor (SI)": list(res.values()),
+                "Unidad": [UNITS_OUT[o] for o in res.keys()]
             })
-            st.success(f"✅ Cálculo exitoso para **{fluid}**")
+            st.success(f"✅ Cálculo exitoso para **{fluid}** (Estado general)")
             st.dataframe(df, hide_index=True, use_container_width=True)
         except Exception as e:
-            st.error(f"❌ Error al obtener propiedades: {e}\nRevisa nombre del fluido y valores válidos.")
+            st.error(f"❌ Error: {e}\n• Verifica que el par de entradas sea físicamente válido para **{fluid}**.\n• Si estás usando un punto de **saturación**, prueba el modo Saturación.")
 
-# ============================================================
-# MODO TABLA (CSV)
-# ============================================================
 else:
-    st.subheader("📘 Interpolación 2D desde tabla CSV")
-    uploaded = st.file_uploader("Sube CSV con columnas (x, y, propiedad)", type=["csv"])
-    if uploaded:
-        df = pd.read_csv(uploaded)
-        st.write("Vista previa de datos:")
-        st.dataframe(df.head())
+    # Saturación: usa P o T + Q
+    sat_by = st.selectbox("Variable de saturación", ["P","T"], help="Elige si das P o T para saturación")
+    if sat_by == "P":
+        st.session_state["uid"] = 3
+        P_SI = input_with_units("P")
+        # T_sat a esa P (opcional mostrar)
+        try:
+            T_sat = PropsSI("T", "P", P_SI, "Q", 0, fluid)
+            st.info(f"T_sat ≈ {T_sat - 273.15:.3f} °C a {P_SI/1000:.3f} kPa")
+        except Exception:
+            pass
+        Q = st.slider("Calidad (Q)", 0.0, 1.0, 0.0, help="0 = líquido sat., 1 = vapor sat.")
+        in1_key, in1_val = "P", P_SI
+    else:
+        st.session_state["uid"] = 4
+        T_SI = input_with_units("T")
+        try:
+            P_sat = PropsSI("P", "T", T_SI, "Q", 0, fluid)
+            st.info(f"P_sat ≈ {P_sat/1000:.3f} kPa a {T_SI-273.15:.3f} °C")
+        except Exception:
+            pass
+        Q = st.slider("Calidad (Q)", 0.0, 1.0, 1.0, help="0 = líquido sat., 1 = vapor sat.")
+        in1_key, in1_val = "T", T_SI
 
-        cols = df.columns.tolist()
-        x_col = st.selectbox("Eje X (por ejemplo Temperatura)", cols, index=0)
-        y_col = st.selectbox("Eje Y (por ejemplo Presión)", cols, index=1)
-        prop_col = st.selectbox("Propiedad a interpolar", [c for c in cols if c not in (x_col, y_col)])
-        method = st.selectbox("Método de interpolación", ["linear", "nearest", "cubic"])
-
-        xq = st.number_input("Valor X a interpolar", value=float(df[x_col].median()))
-        yq = st.number_input("Valor Y a interpolar", value=float(df[y_col].median()))
-
-        if st.button("Interpolar"):
-            try:
-                xv = np.sort(df[x_col].unique())
-                yv = np.sort(df[y_col].unique())
-                pivot = df.pivot_table(index=x_col, columns=y_col, values=prop_col)
-                if pivot.shape == (len(xv), len(yv)):
-                    grid = pivot.values
-                    interp = RegularGridInterpolator((xv, yv), grid, method=method, bounds_error=False, fill_value=None)
-                    val = interp([[xq, yq]])[0]
-                else:
-                    pts = df[[x_col, y_col]].values
-                    vals = df[prop_col].values
-                    val = griddata(pts, vals, (xq, yq), method=method)
-                st.success(f"Valor interpolado ≈ **{val:.5f}**")
-            except Exception as e:
-                st.error(f"No se pudo interpolar: {e}")
-
-        if st.button("Graficar malla"):
-            try:
-                xv = np.sort(df[x_col].unique())
-                yv = np.sort(df[y_col].unique())
-                pivot = df.pivot_table(index=x_col, columns=y_col, values=prop_col)
-                fig, ax = plt.subplots()
-                c = ax.pcolormesh(yv, xv, pivot.values, shading='auto')
-                fig.colorbar(c, ax=ax)
-                ax.set_xlabel(y_col)
-                ax.set_ylabel(x_col)
-                st.pyplot(fig)
-            except Exception as e:
-                st.error(f"Error al graficar: {e}")
+    if st.button("Calcular (Saturación)"):
+        try:
+            res = {}
+            for out in outputs:
+                res[out] = PropsSI(OUT_KEYS[out], in1_key, float(in1_val), "Q", float(Q), fluid)
+            df = pd.DataFrame({
+                "Propiedad": [DESC[o] for o in res.keys()],
+                "Símbolo": list(res.keys()),
+                "Valor (SI)": list(res.values()),
+                "Unidad": [UNITS_OUT[o] for o in res.keys()]
+            })
+            st.success(f"✅ Cálculo exitoso para **{fluid}** (Saturación, Q={Q:.2f})")
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        except Exception as e:
+            st.error(f"❌ Error: {e}\n• Verifica que la P/T de saturación esté dentro del rango del fluido.")
