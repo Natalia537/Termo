@@ -50,8 +50,8 @@ if mode == "CoolProp (propiedades)":
         default=["T", "P", "D", "H"]
     )
 
-    input1 = st.selectbox("Variable 1 (entrada)", ["T (K)", "P (Pa)", "H (J/kg)", "D (kg/m³)"])
-    input2 = st.selectbox("Variable 2 (entrada)", ["P (Pa)", "T (K)", "H (J/kg)", "D (kg/m³)"])
+    input1 = st.selectbox("Variable 1 (entrada)", ["T (C°)", "P (KPa)", "H (J/kg)", "D (kg/m³)"])
+    input2 = st.selectbox("Variable 2 (entrada)", ["P (KPa)", "T (C°)", "H (J/kg)", "D (kg/m³)"])
 
     # Conversión de unidades amigables
     if "T" in input1:
