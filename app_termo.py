@@ -1,118 +1,173 @@
+# ============================================================
 # app_termo.py
+# Streamlit app para obtener propiedades termodinámicas
+# con CoolProp o por interpolación de tablas
+# ============================================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 from scipy.interpolate import RegularGridInterpolator, griddata
-import io
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="TermoTables - propiedades", layout="wide")
+# ============================================================
+# CONFIGURACIÓN BÁSICA
+# ============================================================
+st.set_page_config(page_title="TermoTables - Propiedades Termodinámicas", layout="wide")
 
-st.title("TermoTables - propiedades e interpolación (Streamlit + Python)")
-st.write("Modo: usa CoolProp (recomendado) o carga una tabla CSV para interpolación 2D.")
+st.title("📘 TermoTables - Propiedades Termodinámicas (CoolProp + Interpolación)")
+st.write("""
+Esta herramienta permite obtener propiedades termodinámicas de agua, refrigerantes y gases.
+Puedes usar **CoolProp** para obtener propiedades directamente o **subir una tabla CSV** para interpolar valores.
 
-mode = st.radio("Selecciona modo", ["CoolProp (propiedades)", "Tabla/CSV (interpolación 2D)"])
+### 🧮 Guía rápida de propiedades:
+| Símbolo | Nombre | Unidad (SI) | Descripción breve |
+|----------|---------|-------------|-------------------|
+| **T** | Temperatura | K | Grado de agitación térmica |
+| **P** | Presión | Pa | Fuerza ejercida por unidad de área |
+| **D** | Densidad | kg/m³ | Masa por unidad de volumen |
+| **H** | Entalpía | J/kg | Energía total (interna + PV) |
+| **S** | Entropía | J/kg·K | Energía no disponible para trabajo |
+| **V** | Volumen específico | m³/kg | Volumen ocupado por 1 kg |
+| **CP** | Calor específico a P constante | J/kg·K | Energía para subir 1 K a P constante |
+| **CV** | Calor específico a V constante | J/kg·K | Energía para subir 1 K a V constante |
+""")
 
+mode = st.radio("Selecciona modo de operación", ["CoolProp (propiedades)", "Tabla CSV (interpolación 2D)"])
+
+# ============================================================
+# MODO COOLPROP
+# ============================================================
 if mode == "CoolProp (propiedades)":
-    st.subheader("Obtener propiedades con CoolProp")
-    fluid = st.text_input("Nombre del fluido (ej: Water, R134a, Air)", "Water")
-    outputs = st.multiselect("Propiedades a obtener (CoolProp keys)", 
-                             ["T","P","D","H","S","V","CP","CV"],
-                             default=["T","P","D","H"])
-    # Mapa simple de nombres de salida a claves de CoolProp
-    map_keys = {"T":"T", "P":"P", "D":"D", "H":"H", "S":"S", "V":"Dmolar", "CP":"Cpmass", "CV":"Cvmass"}
-    input1 = st.selectbox("Variable 1 (input)", ["T (K)","P (Pa)","H (J/kg)","D (kg/m3)"])
+    st.subheader("📗 Obtener propiedades con CoolProp")
+
+    fluid = st.text_input("Nombre del fluido (ejemplo: Water, R134a, Air)", "Water")
+
+    outputs = st.multiselect(
+        "Propiedades a obtener (CoolProp keys)",
+        ["T", "P", "D", "H", "S", "V", "CP", "CV"],
+        default=["T", "P", "D", "H"]
+    )
+
+    input1 = st.selectbox("Variable 1 (entrada)", ["T (K)", "P (Pa)", "H (J/kg)", "D (kg/m³)"])
+    input2 = st.selectbox("Variable 2 (entrada)", ["P (Pa)", "T (K)", "H (J/kg)", "D (kg/m³)"])
+
+    # Conversión de unidades amigables
     if "T" in input1:
-    val1 = st.number_input("Temperatura (°C)", value=25.0)
-else:
-    val1 = st.number_input("Valor 1", value=300.0)
+        val1 = st.number_input("Temperatura (°C)", value=25.0)
+    else:
+        val1 = st.number_input("Valor 1", value=300.0)
 
-if "P" in input2:
-    val2 = st.number_input("Presión (kPa)", value=101.325)
-else:
-    val2 = st.number_input("Valor 2", value=101325.0)
+    if "P" in input2:
+        val2 = st.number_input("Presión (kPa)", value=101.325)
+    else:
+        val2 = st.number_input("Valor 2", value=101325.0)
 
-# Conversión interna antes del cálculo
-T_in_K = lambda C: C + 273.15
-P_in_Pa = lambda kPa: kPa * 1000
+    # Funciones de conversión
+    T_in_K = lambda C: C + 273.15
+    P_in_Pa = lambda kPa: kPa * 1000
 
-# Ajuste automático si corresponde
-if "T" in input1:
-    val1 = T_in_K(val1)
-if "P" in input1:
-    val1 = P_in_Pa(val1)
-if "T" in input2:
-    val2 = T_in_K(val2)
-if "P" in input2:
-    val2 = P_in_Pa(val2)
+    # Aplicar conversión antes del cálculo
+    if "T" in input1:
+        val1 = T_in_K(val1)
+    if "P" in input1:
+        val1 = P_in_Pa(val1)
+    if "T" in input2:
+        val2 = T_in_K(val2)
+    if "P" in input2:
+        val2 = P_in_Pa(val2)
+
     if st.button("Calcular propiedades"):
-        # Convert friendly name to CoolProp input keys
-        input_map = {"T (K)": "T", "P (Pa)":"P", "H (J/kg)":"Hmass", "D (kg/m3)":"Dmass"}
-        key1 = input_map[input1]
-        key2 = input_map[input2]
+        input_map = {"T (K)": "T", "P (Pa)": "P", "H (J/kg)": "Hmass", "D (kg/m³)": "Dmass"}
+        map_keys = {
+            "T": "T", "P": "P", "D": "Dmass", "H": "Hmass", "S": "Smass",
+            "V": "Vmass", "CP": "Cpmass", "CV": "Cvmass"
+        }
+
+        units_map = {
+            "T": "K", "P": "Pa", "D": "kg/m³", "H": "J/kg", "S": "J/kg·K",
+            "V": "m³/kg", "CP": "J/kg·K", "CV": "J/kg·K"
+        }
+
+        desc_map = {
+            "T": "Temperatura",
+            "P": "Presión",
+            "D": "Densidad",
+            "H": "Entalpía específica",
+            "S": "Entropía específica",
+            "V": "Volumen específico",
+            "CP": "Calor específico a P constante",
+            "CV": "Calor específico a V constante"
+        }
+
         try:
+            key1 = input_map[input1]
+            key2 = input_map[input2]
             results = {}
             for out in outputs:
                 out_key = map_keys.get(out, out)
-                # PropsSI expects (output, input1, val1, input2, val2, fluid)
                 val = PropsSI(out_key, key1, float(val1), key2, float(val2), fluid)
                 results[out] = val
-            st.write("**Resultados (SI):**")
-            st.table(pd.DataFrame.from_dict(results, orient="index", columns=["Valor"]))
-        except Exception as e:
-            st.error(f"Error al obtener propiedades: {e}\nNota: asegúrate del nombre del fluido y rangos válidos.")
 
+            df = pd.DataFrame({
+                "Propiedad": [desc_map[o] for o in results.keys()],
+                "Símbolo": results.keys(),
+                "Valor": results.values(),
+                "Unidad": [units_map[o] for o in results.keys()]
+            })
+            st.success("✅ Cálculo exitoso")
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        except Exception as e:
+            st.error(f"❌ Error al obtener propiedades: {e}\nRevisa nombre del fluido y valores válidos.")
+
+# ============================================================
+# MODO TABLA (CSV)
+# ============================================================
 else:
-    st.subheader("Interpolación 2D desde tabla CSV")
-    uploaded = st.file_uploader("Sube CSV (columnas: x, y, prop) o una rejilla (x,y,prop1,prop2...)", type=["csv","txt"])
-    if uploaded is not None:
+    st.subheader("📘 Interpolación 2D desde tabla CSV")
+    uploaded = st.file_uploader("Sube CSV con columnas (x, y, propiedad)", type=["csv"])
+    if uploaded:
         df = pd.read_csv(uploaded)
-        st.write("Preview de la tabla:")
+        st.write("Vista previa de datos:")
         st.dataframe(df.head())
-        st.info("Opciones para interpolar: si tienes una malla regular con columnas (x,y,prop) o tres columnas (x,y,prop).")
-        # Ask which columns are x and y
+
         cols = df.columns.tolist()
-        x_col = st.selectbox("Eje X (por ejemplo temperatura)", cols, index=0)
-        y_col = st.selectbox("Eje Y (por ejemplo presión)", cols, index=1)
-        prop_cols = [c for c in cols if c not in (x_col, y_col)]
-        prop_col = st.selectbox("Propiedad a interpolar", prop_cols)
-        method = st.selectbox("Método de interpolación", ["linear","nearest","cubic"])
+        x_col = st.selectbox("Eje X (por ejemplo Temperatura)", cols, index=0)
+        y_col = st.selectbox("Eje Y (por ejemplo Presión)", cols, index=1)
+        prop_col = st.selectbox("Propiedad a interpolar", [c for c in cols if c not in (x_col, y_col)])
+        method = st.selectbox("Método de interpolación", ["linear", "nearest", "cubic"])
+
         xq = st.number_input("Valor X a interpolar", value=float(df[x_col].median()))
         yq = st.number_input("Valor Y a interpolar", value=float(df[y_col].median()))
+
         if st.button("Interpolar"):
-            # Detect if grid is regular -> use RegularGridInterpolator
-            # Try to pivot into grid
             try:
                 xv = np.sort(df[x_col].unique())
                 yv = np.sort(df[y_col].unique())
-                grid_shape = (len(xv), len(yv))
-                # Try to reshape if regular grid
                 pivot = df.pivot_table(index=x_col, columns=y_col, values=prop_col)
-                if pivot.shape == grid_shape:
+                if pivot.shape == (len(xv), len(yv)):
                     grid = pivot.values
                     interp = RegularGridInterpolator((xv, yv), grid, method=method, bounds_error=False, fill_value=None)
                     val = interp([[xq, yq]])[0]
-                    st.success(f"Interpolación (RegularGrid) -> {val}")
                 else:
-                    # fallback using griddata
                     pts = df[[x_col, y_col]].values
                     vals = df[prop_col].values
                     val = griddata(pts, vals, (xq, yq), method=method)
-                    st.success(f"Interpolación (griddata) -> {val}")
+                st.success(f"Valor interpolado ≈ **{val:.5f}**")
             except Exception as e:
                 st.error(f"No se pudo interpolar: {e}")
 
-        st.write("Ejemplo: puedes generar una malla para graficar la propiedad.")
-        if st.button("Graficar malla (preview)"):
-            import matplotlib.pyplot as plt
-            xv = np.sort(df[x_col].unique())
-            yv = np.sort(df[y_col].unique())
+        if st.button("Graficar malla"):
             try:
+                xv = np.sort(df[x_col].unique())
+                yv = np.sort(df[y_col].unique())
                 pivot = df.pivot_table(index=x_col, columns=y_col, values=prop_col)
                 fig, ax = plt.subplots()
                 c = ax.pcolormesh(yv, xv, pivot.values, shading='auto')
                 fig.colorbar(c, ax=ax)
-                ax.set_xlabel(y_col); ax.set_ylabel(x_col)
+                ax.set_xlabel(y_col)
+                ax.set_ylabel(x_col)
                 st.pyplot(fig)
             except Exception as e:
                 st.error(f"Error al graficar: {e}")
