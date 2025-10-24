@@ -22,9 +22,29 @@ if mode == "CoolProp (propiedades)":
     # Mapa simple de nombres de salida a claves de CoolProp
     map_keys = {"T":"T", "P":"P", "D":"D", "H":"H", "S":"S", "V":"Dmolar", "CP":"Cpmass", "CV":"Cvmass"}
     input1 = st.selectbox("Variable 1 (input)", ["T (K)","P (Pa)","H (J/kg)","D (kg/m3)"])
-    val1 = st.number_input("Valor 1", value=300.0, format="%.6f")
-    input2 = st.selectbox("Variable 2 (input)", ["P (Pa)","T (K)","H (J/kg)","D (kg/m3)"])
-    val2 = st.number_input("Valor 2", value=101325.0, format="%.6f")
+    if "T" in input1:
+    val1 = st.number_input("Temperatura (°C)", value=25.0)
+else:
+    val1 = st.number_input("Valor 1", value=300.0)
+
+if "P" in input2:
+    val2 = st.number_input("Presión (kPa)", value=101.325)
+else:
+    val2 = st.number_input("Valor 2", value=101325.0)
+
+# Conversión interna antes del cálculo
+T_in_K = lambda C: C + 273.15
+P_in_Pa = lambda kPa: kPa * 1000
+
+# Ajuste automático si corresponde
+if "T" in input1:
+    val1 = T_in_K(val1)
+if "P" in input1:
+    val1 = P_in_Pa(val1)
+if "T" in input2:
+    val2 = T_in_K(val2)
+if "P" in input2:
+    val2 = P_in_Pa(val2)
     if st.button("Calcular propiedades"):
         # Convert friendly name to CoolProp input keys
         input_map = {"T (K)": "T", "P (Pa)":"P", "H (J/kg)":"Hmass", "D (kg/m3)":"Dmass"}
